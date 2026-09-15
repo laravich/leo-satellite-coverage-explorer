@@ -7,6 +7,9 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 from skyfield.api import EarthSatellite, load, wgs84
+#for live data
+from io import StringIO
+import requests
 
 
 # -----------------------------------------------------------------------------
@@ -21,8 +24,13 @@ st.set_page_config(
 )
 
 DATA_PATH = Path("data/oneweb_satellites.csv")
+
+DATA_URL = ("https://celestrak.org/NORAD/elements/gp.php?GROUP=ONEWEB&FORMAT=CSV")
+DATA_CACHE_SECONDS = 6 * 60 * 60 #6 hours cache the data downloaded
+POSITION_CACHE_SECONDS = 60
+
 C_KM_PER_SECOND = 299_792.458 #speed of light
-CACHE_SECONDS = 60
+#CACHE_SECONDS = 60
 
 NUMERIC_COLUMNS = [
     "INCLINATION",
@@ -71,45 +79,100 @@ CITY_COORDINATES = {
 # Data preparation
 # -----------------------------------------------------------------------------
 
-@st.cache_resource
-def load_satellite_data(csv_path: str):
-    """Load the CSV once and build reusable Skyfield satellite objects."""
+@st.cache_resource(ttl=DATA_CACHE_SECONDS)
+def load_satellite_data(csv_path: str, data_url: str):
+    """
+    Load the local CSV when available.
 
-    # Preserve the original CelesTrak strings for OMM parsing.
-    raw_df = pd.read_csv(csv_path, dtype=str, keep_default_na=False)
+    If the local CSV does not exist, download current orbital
+    data from CelesTrak and cache it for six hours.
 
-    # Convert a separate copy to numeric types for metrics and charts.
+    and build reusable Skyfield satellite objects.
+    """
+
+    local_path = Path(csv_path)
+
+    if local_path.exists():
+        # Use the previously downloaded local dataset.
+        raw_df = pd.read_csv(
+            local_path,
+            dtype=str,
+            keep_default_na=False
+        )
+
+        data_source = f"Local file: {local_path}"
+
+    else:
+        # Used during cloud deployment when data/ is not on GitHub.
+        response = requests.get(
+            data_url,
+            timeout=30
+        )
+
+        response.raise_for_status()
+
+        raw_df = pd.read_csv(
+            StringIO(response.text),
+            dtype=str,
+            keep_default_na=False
+        )
+
+        data_source = "Live CelesTrak data"
+
+    # Create a numeric copy for metrics and visualizations.
     analysis_df = raw_df.copy()
+
     for column in NUMERIC_COLUMNS:
         if column in analysis_df.columns:
             analysis_df[column] = pd.to_numeric(
-                analysis_df[column], errors="coerce"
+                analysis_df[column],
+                errors="coerce"
             )
 
     timescale = load.timescale()
     satellite_entries = []
     load_errors = []
 
-    # Build each satellite once instead of reopening and reparsing the CSV.
+    # Construct every Skyfield satellite object once.
     for record in raw_df.to_dict(orient="records"):
         try:
             satellite_entries.append(
                 {
-                    "satellite": EarthSatellite.from_omm(timescale, record),
+                    "satellite": EarthSatellite.from_omm(
+                        timescale,
+                        record
+                    ),
                     "name": record["OBJECT_NAME"],
                     "norad_id": record["NORAD_CAT_ID"],
-                    "inclination": float(record["INCLINATION"]),
-                    "mean_motion": float(record["MEAN_MOTION"]),
+                    "inclination": float(
+                        record["INCLINATION"]
+                    ),
+                    "mean_motion": float(
+                        record["MEAN_MOTION"]
+                    )
                 }
             )
+
         except (KeyError, TypeError, ValueError) as error:
-            name = record.get("OBJECT_NAME", "Unknown satellite")
-            load_errors.append(f"{name}: {error}")
+            satellite_name = record.get(
+                "OBJECT_NAME",
+                "Unknown satellite"
+            )
 
-    return analysis_df, satellite_entries, timescale, load_errors
+            load_errors.append(
+                f"{satellite_name}: {error}"
+            )
+
+    return (
+        analysis_df,
+        satellite_entries,
+        timescale,
+        load_errors,
+        data_source
+    )
 
 
-@st.cache_data(ttl=CACHE_SECONDS)
+@st.cache_data(ttl=POSITION_CACHE_SECONDS)
 def calculate_snapshot(
     _satellite_entries, #only inside the function
     _timescale,
@@ -390,14 +453,26 @@ def main():
         "from a selected ground location."
     )
 
-    if not DATA_PATH.exists():
-        st.error(f"Dataset not found: {DATA_PATH}")
+    # loading data
+    try:
+        (oneweb_df, satellite_entries, timescale, load_errors, data_source) = load_satellite_data(str(DATA_PATH), DATA_URL)
+
+    except requests.RequestException as error:
+        st.error(
+        "The local CSV was not found and the orbital data "
+        f"could not be downloaded from CelesTrak: {error}"
+        )
         st.stop()
+    # show which source the app used
+    st.caption(f"Data source: {data_source}")
+    #if not DATA_PATH.exists():
+    #    st.error(f"Dataset not found: {DATA_PATH}")
+    #    st.stop()
 
     # Load the CSV and construct Skyfield objects only once.
-    oneweb_df, satellite_entries, timescale, load_errors = (
-        load_satellite_data(str(DATA_PATH))
-    )
+    #oneweb_df, satellite_entries, timescale, load_errors = (
+    #    load_satellite_data(str(DATA_PATH))
+    #)
     location_name, ground_latitude, ground_longitude, minimum_elevation = (
         get_location_settings()
     )

@@ -1,0 +1,28 @@
+# Satellite datasets
+data/
+*.csv
+
+# Python-generated files
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Secrets and environment variables
+.env
+.env.*
+.streamlit/secrets.toml
+
+# Jupyter temporary files
+.ipynb_checkpoints/
+
+# Editor files
+.vscode/
+.idea/
+
+# Operating-system files
+.DS_Store
+Thumbs.db

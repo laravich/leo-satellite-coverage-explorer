@@ -1,7 +1,7 @@
 """Interactive OneWeb satellite position and ground-coverage explorer."""
 
 from pathlib import Path
-
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -10,6 +10,7 @@ from skyfield.api import EarthSatellite, load, wgs84
 #for live data
 from io import StringIO
 import requests
+
 
 
 # -----------------------------------------------------------------------------
@@ -266,6 +267,140 @@ def calculate_snapshot(
     calculation_time = current_time.utc_strftime("%Y-%m-%d %H:%M:%S UTC")
     return position_df, visible_df, calculation_time, calculation_errors
 
+# -----------------------------------------------------------------------------
+# Coverage calculation
+# -----------------------------------------------------------------------------
+@st.cache_data
+def calculate_coverage_grid(
+    visible_df,
+    minimum_elevation,
+    grid_step=2
+):
+    """
+    This calculates the maximum coverage radius of one satellite, expressed as an angle measured from the centre of Earth.
+
+    Calculate how many visible satellites cover each point
+    on a global latitude-longitude grid.
+
+    Coverage is based on:
+    - satellite altitude
+    - spherical Earth geometry
+    - selected minimum elevation angle
+    """
+
+    grid_columns = [
+        "latitude",
+        "longitude",
+        "coverage_count"
+    ]
+
+    if visible_df.empty:
+        return pd.DataFrame(columns=grid_columns)
+
+    earth_radius_km = 6371.0
+
+    # Create ground locations every two degrees.
+    latitudes = np.arange(
+        -90,
+        90 + grid_step,
+        grid_step
+    )
+
+    longitudes = np.arange(
+        -180,
+        180,
+        grid_step
+    )
+
+    longitude_grid, latitude_grid = np.meshgrid(
+        longitudes,
+        latitudes
+    )
+
+    latitude_grid_rad = np.radians(latitude_grid)
+    longitude_grid_rad = np.radians(longitude_grid)
+
+    coverage_count = np.zeros(
+        latitude_grid.shape,
+        dtype=int
+    )
+
+    elevation_rad = np.radians(minimum_elevation)
+
+    for _, satellite in visible_df.iterrows():
+
+        satellite_latitude_rad = np.radians(
+            satellite["satellite_latitude"]
+        )
+
+        satellite_longitude_rad = np.radians(
+            satellite["satellite_longitude"]
+        )
+
+        satellite_altitude_km = satellite[
+            "satellite_altitude_km"
+        ]
+
+        orbital_radius_km = (
+            earth_radius_km +
+            satellite_altitude_km
+        )
+
+        # Maximum Earth-centred angle reached by the footprint.
+        footprint_angle = (
+            np.arccos( #This converts the geometric relationship into an angle.
+                np.clip( # arccos accepts only -1 to +1
+                    (
+                        earth_radius_km /
+                        orbital_radius_km
+                    ) *
+                    np.cos(elevation_rad),
+                    -1,
+                    1
+                )
+            )
+            -
+            elevation_rad
+        )
+
+        # Great-circle angle between the satellite subpoint
+        # and every point in the global grid.
+        cosine_distance = (
+            np.sin(latitude_grid_rad) *
+            np.sin(satellite_latitude_rad)
+            +
+            np.cos(latitude_grid_rad) *
+            np.cos(satellite_latitude_rad) *
+            np.cos(
+                longitude_grid_rad -
+                satellite_longitude_rad
+            )
+        )
+
+        angular_distance = np.arccos(
+            np.clip(cosine_distance, -1, 1)
+        )
+
+        # Add one when this satellite covers the grid point.
+        coverage_count += (
+            angular_distance <= footprint_angle
+        ).astype(int)
+
+    coverage_grid_df = pd.DataFrame(
+        {
+            "latitude": latitude_grid.ravel(),
+            "longitude": longitude_grid.ravel(),
+            "coverage_count": coverage_count.ravel()
+        }
+    )
+
+    # Remove locations not covered by any selected satellite.
+    coverage_grid_df = coverage_grid_df[
+        coverage_grid_df["coverage_count"] > 0
+    ].copy()
+
+    return coverage_grid_df
+
 
 # -----------------------------------------------------------------------------
 # Sidebar controls
@@ -460,6 +595,139 @@ def build_coverage_map(
     )
     return apply_world_style(figure)
 
+# heatmap building function
+def build_coverage_heatmap(
+    coverage_grid_df,
+    visible_df,
+    location_name,
+    ground_latitude,
+    ground_longitude
+):
+    """
+    Create a geographic heatmap showing coverage overlap.
+
+    The colour at each grid point indicates how many of the
+    currently visible satellites cover that location.
+    """
+
+    figure = go.Figure()
+
+    # Coverage grid
+    if not coverage_grid_df.empty:
+
+        hover_text = coverage_grid_df.apply(
+            lambda row: (
+                f"<b>Coverage location</b><br>"
+                f"Latitude: {row['latitude']:.1f}°<br>"
+                f"Longitude: {row['longitude']:.1f}°<br>"
+                f"Covering satellites: "
+                f"{int(row['coverage_count'])}"
+            ),
+            axis=1
+        )
+
+        figure.add_trace(
+            go.Scattergeo(
+                lat=coverage_grid_df["latitude"],
+                lon=coverage_grid_df["longitude"],
+                mode="markers",
+                name="Coverage area",
+                marker={
+                    "size": 6,
+                    "symbol": "square",
+                    "opacity": 0.75,
+                    "color": coverage_grid_df[
+                        "coverage_count"
+                    ],
+                    "colorscale": "Turbo",
+                    "cmin": 1,
+                    "cmax": coverage_grid_df[
+                        "coverage_count"
+                    ].max(),
+                    "showscale": True,
+                    "colorbar": {
+                        "title": "Covering<br>satellites"
+                    },
+                    "line": {
+                        "width": 0
+                    }
+                },
+                text=hover_text,
+                hoverinfo="text"
+            )
+        )
+
+    # Locations of the satellites creating the coverage.
+    figure.add_trace(
+        go.Scattergeo(
+            lat=visible_df["satellite_latitude"],
+            lon=visible_df["satellite_longitude"],
+            mode="markers",
+            name="Visible satellites",
+            marker={
+                "size": 7,
+                "symbol": "diamond",
+                "color": "white",
+                "line": {
+                    "width": 1,
+                    "color": "black"
+                }
+            },
+            text=visible_df["satellite_name"],
+            hovertemplate=(
+                "<b>%{text}</b>"
+                "<extra></extra>"
+            )
+        )
+    )
+
+    # User-selected city or custom location.
+    figure.add_trace(
+        go.Scattergeo(
+            lat=[ground_latitude],
+            lon=[ground_longitude],
+            mode="markers+text",
+            name="Ground location",
+            text=[location_name],
+            textposition="top center",
+            marker={
+                "size": 14,
+                "symbol": "star",
+                "color": "red",
+                "line": {
+                    "width": 1,
+                    "color": "white"
+                }
+            },
+            hovertemplate=(
+                f"<b>{location_name}</b><br>"
+                f"Latitude: {ground_latitude:.4f}°<br>"
+                f"Longitude: {ground_longitude:.4f}°"
+                "<extra></extra>"
+            )
+        )
+    )
+
+    figure.update_layout(
+        height=650,
+        legend={
+            "orientation": "h",
+            "yanchor": "top",
+            "y": -0.05,
+            "xanchor": "center",
+            "x": 0.5,
+            "title": None
+        },
+        margin={
+            "l": 0,
+            "r": 0,
+            "t": 10,
+            "b": 70
+        }
+    )
+
+    # Reuse your existing world-map styling function.
+    return apply_world_style(figure)
 
 # -----------------------------------------------------------------------------
 # Main application
@@ -475,31 +743,34 @@ def main():
         "from a selected ground location."
     )
 
-    # loading data
+    # Loading data
     try:
-        (oneweb_df, satellite_entries, timescale, load_errors, data_source) = load_satellite_data(str(DATA_PATH), DATA_URL)
+        (
+            oneweb_df,
+            satellite_entries,
+            timescale,
+            load_errors,
+            data_source,
+        ) = load_satellite_data(
+            str(DATA_PATH),
+            DATA_URL,
+        )
 
     except requests.RequestException as error:
         st.error(
-        "The local CSV was not found and the orbital data "
-        f"could not be downloaded from CelesTrak: {error}"
+            "The local CSV was not found and the orbital data "
+            f"could not be downloaded from CelesTrak: {error}"
         )
         st.stop()
-    # show which source the app used
-    st.caption(f"Data source: {data_source}")
-    #if not DATA_PATH.exists():
-    #    st.error(f"Dataset not found: {DATA_PATH}")
-    #    st.stop()
 
-    # Load the CSV and construct Skyfield objects only once.
-    #oneweb_df, satellite_entries, timescale, load_errors = (
-    #    load_satellite_data(str(DATA_PATH))
-    #)
+    # Show which source the app used
+    st.caption(f"Data source: {data_source}")
+
     location_name, ground_latitude, ground_longitude, minimum_elevation = (
         get_location_settings()
     )
 
-    # Refresh time-dependent positions without reloading the dataset.
+    # Refresh time-dependent positions without reloading the dataset
     if st.sidebar.button("🔄 Update satellite positions"):
         calculate_snapshot.clear()
         st.rerun()
@@ -522,46 +793,85 @@ def main():
     st.caption(
         "These metrics describe the orbital records in the local CelesTrak file."
     )
+
     overview_col1, overview_col2, overview_col3 = st.columns(3)
-    overview_col1.metric("Satellites", len(satellite_entries))
-    overview_col2.metric(
-        "Average inclination", f"{oneweb_df['INCLINATION'].mean():.2f}°"
-    )
-    overview_col3.metric(
-        "Average orbits per day", f"{oneweb_df['MEAN_MOTION'].mean():.2f}"
+
+    overview_col1.metric(
+        "Satellites",
+        len(satellite_entries),
     )
 
-    # Keep large diagnostic tables available without crowding the dashboard.
+    overview_col2.metric(
+        "Average inclination",
+        f"{oneweb_df['INCLINATION'].mean():.2f}°",
+    )
+
+    overview_col3.metric(
+        "Average orbits per day",
+        f"{oneweb_df['MEAN_MOTION'].mean():.2f}",
+    )
+
+    # Keep large diagnostic tables available without crowding the dashboard
     with st.expander("Inspect the data"):
         dataset_tab, position_tab = st.tabs(
             ["Orbital dataset", "Calculated positions"]
         )
-        dataset_tab.dataframe(oneweb_df, use_container_width=True)
-        position_tab.dataframe(position_df, use_container_width=True)
+
+        dataset_tab.dataframe(
+            oneweb_df,
+            use_container_width=True,
+        )
+
+        position_tab.dataframe(
+            position_df,
+            use_container_width=True,
+        )
 
         all_errors = load_errors + calculation_errors
+
         if all_errors:
-            st.warning(f"{len(all_errors)} satellite record(s) could not be processed.")
+            st.warning(
+                f"{len(all_errors)} satellite record(s) "
+                "could not be processed."
+            )
+
             st.code("\n".join(all_errors[:20]))
 
     chart_col1, chart_col2 = st.columns(2)
 
     with chart_col1:
         st.subheader("Orbital inclination distribution")
-        st.caption("Shows how the orbital planes are tilted relative to the equator.")
+
+        st.caption(
+            "Shows how the orbital planes are tilted relative to the equator."
+        )
+
         inclination_figure = px.histogram(
             oneweb_df,
             x="INCLINATION",
             nbins=30,
-            labels={"INCLINATION": "Inclination (degrees)"},
+            labels={
+                "INCLINATION": "Inclination (degrees)"
+            },
             color_discrete_sequence=["#1F77B4"],
         )
-        inclination_figure.update_layout(yaxis_title="Number of satellites")
-        st.plotly_chart(inclination_figure, use_container_width=True)
+
+        inclination_figure.update_layout(
+            yaxis_title="Number of satellites"
+        )
+
+        st.plotly_chart(
+            inclination_figure,
+            use_container_width=True,
+        )
 
     with chart_col2:
         st.subheader("Inclination and mean motion")
-        st.caption("Compares orbital tilt with completed orbits per day.")
+
+        st.caption(
+            "Compares orbital tilt with completed orbits per day."
+        )
+
         orbit_figure = px.scatter(
             oneweb_df,
             x="INCLINATION",
@@ -572,19 +882,26 @@ def main():
                 "MEAN_MOTION": "Orbits per day",
             },
         )
-        st.plotly_chart(orbit_figure, use_container_width=True)
+
+        st.plotly_chart(
+            orbit_figure,
+            use_container_width=True,
+        )
 
     # -------------------------------------------------------------------------
     # Global satellite positions
     # -------------------------------------------------------------------------
 
     st.header("🌍 Current satellite positions")
+
     st.caption(
         f"Calculated at {calculation_time}. Each marker is the point on Earth "
         "directly below a satellite, not its full coverage footprint."
     )
+
     st.plotly_chart(
-        build_world_position_map(position_df), use_container_width=True
+        build_world_position_map(position_df),
+        use_container_width=True,
     )
 
     # -------------------------------------------------------------------------
@@ -592,49 +909,88 @@ def main():
     # -------------------------------------------------------------------------
 
     st.header("📡 Ground coverage analysis")
+
     st.write(
         f"Location: **{location_name}** "
         f"({ground_latitude:.4f}°, {ground_longitude:.4f}°)"
     )
+
     st.caption(
         f"Satellites must be at least {minimum_elevation}° above the horizon. "
         "This is geometric visibility, not guaranteed commercial service."
     )
 
     number_visible = len(visible_df)
+
     if number_visible:
         best_elevation = visible_df["elevation_deg"].max()
-        nearest_row = visible_df.loc[visible_df["distance_km"].idxmin()]
+
+        nearest_row = visible_df.loc[
+            visible_df["distance_km"].idxmin()
+        ]
+
         nearest_distance = nearest_row["distance_km"]
         nearest_delay = nearest_row["delay_ms"]
+
         st.success(
             f"This location currently has geometric coverage from "
             f"{number_visible} satellite(s)."
         )
+
     else:
-        best_elevation = nearest_distance = nearest_delay = None
-        st.warning("No satellite currently meets the selected elevation angle.")
+        best_elevation = None
+        nearest_distance = None
+        nearest_delay = None
+
+        st.warning(
+            "No satellite currently meets the selected elevation angle."
+        )
 
     metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
-    metric_col1.metric("Visible satellites", number_visible)
-    metric_col2.metric(
-        "Best elevation",
-        f"{best_elevation:.1f}°" if best_elevation is not None else "N/A",
-    )
-    metric_col3.metric(
-        "Nearest satellite",
-        f"{nearest_distance:,.0f} km" if nearest_distance is not None else "N/A",
-    )
-    metric_col4.metric(
-        "One-way space delay",
-        f"{nearest_delay:.2f} ms" if nearest_delay is not None else "N/A",
+
+    metric_col1.metric(
+        "Visible satellites",
+        number_visible,
     )
 
+    metric_col2.metric(
+        "Best elevation",
+        (
+            f"{best_elevation:.1f}°"
+            if best_elevation is not None
+            else "N/A"
+        ),
+    )
+
+    metric_col3.metric(
+        "Nearest satellite",
+        (
+            f"{nearest_distance:,.0f} km"
+            if nearest_distance is not None
+            else "N/A"
+        ),
+    )
+
+    metric_col4.metric(
+        "One-way space delay",
+        (
+            f"{nearest_delay:.2f} ms"
+            if nearest_delay is not None
+            else "N/A"
+        ),
+    )
+
+    # -------------------------------------------------------------------------
+    # Current coverage map
+    # -------------------------------------------------------------------------
+
     st.subheader("Current coverage map")
+
     st.caption(
         "Coloured markers meet the selected elevation threshold; the red star "
         "is the ground location."
     )
+
     st.plotly_chart(
         build_coverage_map(
             visible_df,
@@ -645,17 +1001,66 @@ def main():
         use_container_width=True,
     )
 
-    # The remaining charts and table require at least one visible satellite.
+    # -------------------------------------------------------------------------
+    # Coverage footprint heatmap
+    # -------------------------------------------------------------------------
+
+    st.subheader("🌐 Coverage footprint heatmap")
+
+    st.caption(
+        f"This map shows the estimated ground coverage of the "
+        f"{number_visible} satellites currently visible from "
+        f"{location_name}. The colours represent overlapping coverage."
+    )
+
+    if not visible_df.empty:
+
+        # Calculate how many satellites cover each global grid point
+        coverage_grid_df = calculate_coverage_grid(
+            visible_df=visible_df,
+            minimum_elevation=minimum_elevation,
+            grid_step=2,
+        )
+
+        # Create the Plotly geographic coverage heatmap
+        coverage_heatmap = build_coverage_heatmap(
+            coverage_grid_df=coverage_grid_df,
+            visible_df=visible_df,
+            location_name=location_name,
+            ground_latitude=ground_latitude,
+            ground_longitude=ground_longitude,
+        )
+
+        st.plotly_chart(
+            coverage_heatmap,
+            use_container_width=True,
+        )
+
+    else:
+        st.info(
+            "The heatmap cannot be generated because no satellite "
+            "meets the selected minimum elevation angle."
+        )
+
+    # -------------------------------------------------------------------------
+    # Existing elevation charts and table
+    # -------------------------------------------------------------------------
+
     if not visible_df.empty:
         details_col1, details_col2 = st.columns(2)
 
         with details_col1:
             st.subheader("Highest visible satellites")
-            st.caption("Higher elevation means farther above the local horizon.")
+
+            st.caption(
+                "Higher elevation means farther above the local horizon."
+            )
+
             elevation_chart_df = (
                 visible_df.nlargest(15, "elevation_deg")
                 .sort_values("elevation_deg")
             )
+
             elevation_figure = px.bar(
                 elevation_chart_df,
                 x="elevation_deg",
@@ -668,14 +1073,24 @@ def main():
                     "satellite_name": "Satellite",
                 },
             )
-            elevation_figure.update_layout(coloraxis_showscale=False)
-            st.plotly_chart(elevation_figure, use_container_width=True)
+
+            elevation_figure.update_layout(
+                coloraxis_showscale=False
+            )
+
+            st.plotly_chart(
+                elevation_figure,
+                use_container_width=True,
+            )
 
         with details_col2:
             st.subheader("Elevation versus distance")
+
             st.caption(
-                "Satellites higher in the sky generally have a shorter slant range."
+                "Satellites higher in the sky generally have a "
+                "shorter slant range."
             )
+
             distance_figure = px.scatter(
                 visible_df,
                 x="elevation_deg",
@@ -685,12 +1100,19 @@ def main():
                 color_continuous_scale="Turbo",
                 labels={
                     "elevation_deg": "Elevation angle (degrees)",
-                    "distance_km": "Distance from ground station (km)",
+                    "distance_km": (
+                        "Distance from ground station (km)"
+                    ),
                 },
             )
-            st.plotly_chart(distance_figure, use_container_width=True)
+
+            st.plotly_chart(
+                distance_figure,
+                use_container_width=True,
+            )
 
         st.subheader("Visible satellite details")
+
         coverage_table = visible_df[
             [
                 "satellite_name",
@@ -701,6 +1123,7 @@ def main():
                 "delay_ms",
             ]
         ].copy()
+
         coverage_table.columns = [
             "Satellite",
             "NORAD ID",
@@ -709,6 +1132,7 @@ def main():
             "Distance (km)",
             "One-way delay (ms)",
         ]
+
         coverage_table = coverage_table.round(
             {
                 "Elevation (°)": 2,
@@ -717,6 +1141,7 @@ def main():
                 "One-way delay (ms)": 2,
             }
         )
+
         st.dataframe(
             coverage_table,
             use_container_width=True,

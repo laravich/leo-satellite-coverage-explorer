@@ -26,6 +26,9 @@ st.set_page_config(
 DATA_PATH = Path("data/oneweb_satellites.csv")
 
 DATA_URL = ("https://celestrak.org/NORAD/elements/gp.php?GROUP=ONEWEB&FORMAT=CSV")
+
+FALLBACK_DATA_URL = ("https://raw.githubusercontent.com/satvisorcom/satvisor-data/master/celestrak/json/oneweb.json")
+
 DATA_CACHE_SECONDS = 6 * 60 * 60 #6 hours cache the data downloaded
 POSITION_CACHE_SECONDS = 60
 
@@ -103,21 +106,40 @@ def load_satellite_data(csv_path: str, data_url: str):
         data_source = f"Local file: {local_path}"
 
     else:
-        # Used during cloud deployment when data/ is not on GitHub.
-        response = requests.get(
-            data_url,
-            timeout=30
-        )
+        # First try downloading CSV data directly from CelesTrak.
+        try:
+            response = requests.get(
+             data_url,
+             timeout=(10, 60)
+            )
 
-        response.raise_for_status()
+            response.raise_for_status()
 
-        raw_df = pd.read_csv(
-            StringIO(response.text),
-            dtype=str,
-            keep_default_na=False
-        )
+            raw_df = pd.read_csv(
+                StringIO(response.text),
+                dtype=str,
+               keep_default_na=False
+            )
 
-        data_source = "Live CelesTrak data"
+            data_source = "Live CelesTrak data"
+
+        # Use the GitHub mirror if CelesTrak cannot be reached.
+        except requests.RequestException:
+            fallback_response = requests.get(
+               FALLBACK_DATA_URL,
+               timeout=(10, 60)
+            )
+
+            fallback_response.raise_for_status()
+
+            raw_df = pd.DataFrame(
+                fallback_response.json()
+            )
+
+            # Replace missing values and preserve OMM fields as strings.
+            raw_df = raw_df.fillna("").astype(str)
+
+            data_source = "CelesTrak data through backup mirror"
 
     # Create a numeric copy for metrics and visualizations.
     analysis_df = raw_df.copy()

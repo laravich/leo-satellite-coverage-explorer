@@ -729,6 +729,174 @@ def build_coverage_heatmap(
     # Reuse your existing world-map styling function.
     return apply_world_style(figure)
 
+# create 3d map of the earth
+def build_3d_satellite_globe(position_df):
+    """
+    Create an interactive 3D globe showing satellites at their
+    calculated altitude above Earth.
+    """
+
+    earth_radius_km = 6371.0
+
+    # -------------------------------------------------------------------------
+    # Convert satellite latitude, longitude and altitude to 3D coordinates
+    # -------------------------------------------------------------------------
+    latitude_rad = np.radians(position_df["latitude"])
+    longitude_rad = np.radians(position_df["longitude"])
+
+    satellite_radius = (
+        earth_radius_km + position_df["altitude_km"]
+    )
+
+    satellite_x = (
+        satellite_radius
+        * np.cos(latitude_rad)
+        * np.cos(longitude_rad)
+    )
+
+    satellite_y = (
+        satellite_radius
+        * np.cos(latitude_rad)
+        * np.sin(longitude_rad)
+    )
+
+    satellite_z = (
+        satellite_radius
+        * np.sin(latitude_rad)
+    )
+
+    # -------------------------------------------------------------------------
+    # Create the Earth sphere
+    # -------------------------------------------------------------------------
+    earth_longitude = np.linspace(0, 2 * np.pi, 120)
+    earth_latitude = np.linspace(-np.pi / 2, np.pi / 2, 60)
+
+    earth_longitude_grid, earth_latitude_grid = np.meshgrid(
+        earth_longitude,
+        earth_latitude,
+    )
+
+    earth_x = (
+        earth_radius_km
+        * np.cos(earth_latitude_grid)
+        * np.cos(earth_longitude_grid)
+    )
+
+    earth_y = (
+        earth_radius_km
+        * np.cos(earth_latitude_grid)
+        * np.sin(earth_longitude_grid)
+    )
+
+    earth_z = (
+        earth_radius_km
+        * np.sin(earth_latitude_grid)
+    )
+
+    figure = go.Figure()
+
+    # Add Earth
+    figure.add_trace(
+        go.Surface(
+            x=earth_x,
+            y=earth_y,
+            z=earth_z,
+            surfacecolor=np.sin(earth_latitude_grid),
+            colorscale=[
+                [0.0, "#0B3D91"],
+                [0.5, "#1D9CB8"],
+                [1.0, "#78C7E8"],
+            ],
+            showscale=False,
+            opacity=0.9,
+            name="Earth",
+            hoverinfo="skip",
+        )
+    )
+
+    # -------------------------------------------------------------------------
+    # Create satellite hover information
+    # -------------------------------------------------------------------------
+    hover_text = position_df.apply(
+        lambda row: (
+            f"<b>{row['satellite_name']}</b><br>"
+            f"NORAD ID: {row['norad_id']}<br>"
+            f"Latitude: {row['latitude']:.2f}°<br>"
+            f"Longitude: {row['longitude']:.2f}°<br>"
+            f"Altitude: {row['altitude_km']:,.1f} km"
+        ),
+        axis=1,
+    )
+
+    # Add satellites
+    figure.add_trace(
+        go.Scatter3d(
+            x=satellite_x,
+            y=satellite_y,
+            z=satellite_z,
+            mode="markers",
+            name="Satellites",
+            marker={
+                "size": 3.5,
+                "color": position_df["altitude_km"],
+                "colorscale": "Turbo",
+                "showscale": True,
+                "colorbar": {
+                    "title": "Altitude<br>(km)"
+                },
+                "line": {
+                    "width": 0.3,
+                    "color": "white",
+                },
+            },
+            text=hover_text,
+            hoverinfo="text",
+        )
+    )
+
+    # -------------------------------------------------------------------------
+    # Format the 3D scene
+    # -------------------------------------------------------------------------
+    figure.update_layout(
+        height=750,
+        scene={
+            "aspectmode": "data",
+            "xaxis": {
+                "visible": False,
+            },
+            "yaxis": {
+                "visible": False,
+            },
+            "zaxis": {
+                "visible": False,
+            },
+            "camera": {
+                "eye": {
+                    "x": 1.5,
+                    "y": 1.5,
+                    "z": 1.0,
+                }
+            },
+            "bgcolor": "#050B18",
+        },
+        paper_bgcolor="#050B18",
+        margin={
+            "l": 0,
+            "r": 0,
+            "t": 20,
+            "b": 0,
+        },
+        legend={
+            "orientation": "h",
+            "yanchor": "top",
+            "y": -0.02,
+            "xanchor": "center",
+            "x": 0.5,
+        },
+    )
+
+    return figure
+
 # -----------------------------------------------------------------------------
 # Main application
 # -----------------------------------------------------------------------------
@@ -901,6 +1069,21 @@ def main():
 
     st.plotly_chart(
         build_world_position_map(position_df),
+        use_container_width=True,
+    )
+
+    #3D Map
+    st.subheader("🌐 3D satellite globe")
+
+    st.caption(
+        "Satellites are displayed at their calculated altitude above Earth. "
+        "Drag to rotate the globe and scroll to zoom."
+    )
+
+    satellite_globe = build_3d_satellite_globe(position_df)
+
+    st.plotly_chart(
+        satellite_globe,
         use_container_width=True,
     )
 

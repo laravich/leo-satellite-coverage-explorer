@@ -142,10 +142,13 @@ def calculate_satellites_along_route(
     satellite_entries,
     timescale,
     minimum_elevation_deg=10,
+    hysteresis_deg=5,
 ):
     """Find the highest visible satellite at sampled vehicle positions."""
+    """Compare highest-elevation and hysteresis satellite selection."""
     results = []
     start_time = timescale.now().utc_datetime()
+    current_satellite_name = None
 
     # Use every third point: 20 positions from the 60-point example route.
     for sample_number, position in enumerate(route.iloc[::3].itertuples(index=False)):
@@ -155,7 +158,8 @@ def calculate_satellites_along_route(
         )
         vehicle = wgs84.latlon(position.latitude, position.longitude)
 
-        best_satellite = None
+        #best_satellite = None
+        visible = []
 
         for entry in satellite_entries:
             try:
@@ -165,38 +169,105 @@ def calculate_satellites_along_route(
 
                 elevation, azimuth, distance = topocentric.altaz()
 
-                if elevation.degrees < minimum_elevation_deg:
-                    continue
-
-                if (
-                    best_satellite is None
-                    or elevation.degrees > best_satellite["elevation_deg"]
-                ):
-                    best_satellite = {
+                if elevation.degrees >= minimum_elevation_deg:
+                    visible.append({
                         "satellite_name": entry["name"],
                         "elevation_deg": elevation.degrees,
                         "distance_km": distance.km,
-                    }
+                    })
+                
+                # if elevation.degrees < minimum_elevation_deg:
+                #     continue
+
+                # if (
+                #     best_satellite is None
+                #     or elevation.degrees > best_satellite["elevation_deg"]
+                # ):
+                #     best_satellite = {
+                #         "satellite_name": entry["name"],
+                #         "elevation_deg": elevation.degrees,
+                #         "distance_km": distance.km,
+                #     }
 
             except (TypeError, ValueError):
                 continue
+
+        # Baseline: choose the satellite highest in the sky.
+        highest = max(visible, key=lambda sat: sat["elevation_deg"], default=None)
+
+        # Find the satellite selected at the previous sampled point.
+        current = next(
+            (
+                sat for sat in visible
+                if sat["satellite_name"] == current_satellite_name
+            ),
+            None,
+        )
+        switch_reason = (
+            "No satellite visible" if highest is None
+            else "Previous satellite below minimum elevation" if current is None
+            else "Candidate exceeds margin" if (
+                highest["elevation_deg"]
+                >= current["elevation_deg"] + hysteresis_deg
+            )
+            else "Keep current satellite"
+        )
+
+        if highest is None:
+            selected = None
+
+        elif current is None:
+            # Current satellite is no longer visible: choose the highest.
+            selected = highest
+
+        elif (
+            highest["elevation_deg"]
+            >= current["elevation_deg"] + hysteresis_deg
+        ):
+            # Switch only when the candidate is sufficiently higher.
+            selected = highest
+
+        else:
+            # Keep the current satellite.
+            selected = current
+
+        current_satellite_name = (
+            selected["satellite_name"] if selected else None
+        )
+
 
         results.append({
             "step": position.step,
             "minutes": 2 * sample_number,
             "latitude": position.latitude,
             "longitude": position.longitude,
+            "highest_satellite": (
+                highest["satellite_name"] if highest else None
+            ),
+            "highest_elevation_deg": (
+                highest["elevation_deg"] if highest else np.nan
+            ),
+            # Existing journey code uses these columns.
             "satellite_name": (
-                best_satellite["satellite_name"]
-                if best_satellite else None
+                selected["satellite_name"]
+                if selected else None
             ),
             "elevation_deg": (
-                best_satellite["elevation_deg"]
-                if best_satellite else np.nan
+                selected["elevation_deg"]
+                if selected else np.nan
             ),
             "distance_km": (
-                best_satellite["distance_km"]
-                if best_satellite else np.nan
+                selected["distance_km"]
+                if selected else np.nan
+            ),
+            "hysteresis_deg": hysteresis_deg,
+            "switch_reason": switch_reason,
+            "previous_satellite_elevation_deg": (
+                current["elevation_deg"] if current else np.nan
+            ),
+            "elevation_difference_deg": (
+                highest["elevation_deg"] - current["elevation_deg"]
+                if highest and current else np.nan
             ),
         })
 
@@ -1539,6 +1610,14 @@ def main():
     # find best satellite for the ue position
     st.subheader("OneWeb visibility along the vehicle route")
 
+    hysteresis_deg = st.slider(
+        "Satellite handover margin (degrees)",
+        min_value=0,
+        max_value=20,
+        value=5,
+        step=1,
+    )
+
     if st.button("Calculate satellite visibility along route"):
         with st.spinner("Checking OneWeb satellites along the route..."):
             satellite_route_df = calculate_satellites_along_route(
@@ -1546,7 +1625,37 @@ def main():
                 satellite_entries,
                 timescale,
                 minimum_elevation_deg=minimum_elevation,
+                hysteresis_deg=hysteresis_deg,
             )
+
+        comparison = satellite_route_df[
+            ["minutes", "highest_satellite", "satellite_name"]
+        ].copy()
+
+        # Count changes between consecutive visible satellites.
+        highest_changes = (
+            comparison["highest_satellite"]
+            .ne(comparison["highest_satellite"].shift())
+            & comparison["highest_satellite"].notna()
+            & comparison["highest_satellite"].shift().notna()
+        ).sum()
+
+        hysteresis_changes = (
+            comparison["satellite_name"]
+            .ne(comparison["satellite_name"].shift())
+            & comparison["satellite_name"].notna()
+            & comparison["satellite_name"].shift().notna()
+        ).sum()
+
+        st.write(
+            f"Satellite changes — highest elevation: {highest_changes}; "
+            f"5° hysteresis: {hysteresis_changes}"
+        )
+        st.dataframe(
+            comparison,
+            hide_index=True,
+            use_container_width=True,
+        )
 
         st.dataframe(
             satellite_route_df.round({

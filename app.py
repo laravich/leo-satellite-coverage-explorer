@@ -1615,6 +1615,31 @@ def main():
         )
         handover_count = int(handover.sum())
 
+        transition_df = journey_df.loc[
+            handover,
+            ["minutes", "serving_link", "network_type"]
+        ].copy()
+
+        transition_df["previous_link"] = previous_link[handover].values
+        transition_df["previous_type"] = (
+            journey_df["network_type"].shift()[handover].values
+        )
+        transition_df["transition_type"] = (
+            transition_df["previous_type"]
+            + " → "
+            + transition_df["network_type"]
+        )
+
+        st.write("Connected-link changes by type")
+        st.write(transition_df["transition_type"].value_counts())
+        st.dataframe(
+            transition_df[
+                ["minutes", "previous_link", "serving_link", "transition_type"]
+            ],
+            hide_index=True,
+            use_container_width=True,
+        )
+
         outage_points = int(
             journey_df["network_type"].eq("Outage").sum()
         )

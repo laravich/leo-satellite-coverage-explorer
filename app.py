@@ -10,7 +10,7 @@ from skyfield.api import EarthSatellite, load, wgs84
 #for live data
 from io import StringIO
 import requests
-
+from datetime import timedelta
 
 
 # -----------------------------------------------------------------------------
@@ -91,6 +91,116 @@ def example_hybrid_route():
         "longitude": [11.0750, 11.0470, 11.0120],
     })
     return route, sites
+
+def calculate_terrestrial_links(route, sites):
+    """Estimate signal from every example gNB at each route point."""
+    results = []
+
+    for position in route.itertuples(index=False):
+        for site in sites.itertuples(index=False):
+            # Distance between vehicle and gNB using the Haversine formula.
+            lat1, lat2 = np.radians([position.latitude, site.latitude])
+            delta_lat = lat2 - lat1
+            delta_lon = np.radians(site.longitude - position.longitude)
+
+            a = (
+                np.sin(delta_lat / 2) ** 2
+                + np.cos(lat1) * np.cos(lat2) * np.sin(delta_lon / 2) ** 2
+            )
+            distance_km = 2 * 6371.0 * np.arcsin(
+                np.sqrt(np.clip(a, 0.0, 1.0))
+            )
+
+            # Illustrative 3.5 GHz log-distance signal model.
+            distance_m = max(distance_km * 1000, 20.0)
+            reference_loss_db = (
+                32.45 + 20 * np.log10(3500) - 60
+            )
+            path_loss_db = (
+                reference_loss_db + 30 * np.log10(distance_m)
+            )
+            received_power_dbm = 46.0 - path_loss_db
+
+            results.append({
+                "step": position.step,
+                "site": site.site,
+                "distance_km": distance_km,
+                "received_power_dbm": received_power_dbm,
+            })
+
+    all_links = pd.DataFrame(results)
+
+    # Select the strongest gNB at each route point.
+    strongest = all_links.loc[
+        all_links.groupby("step")["received_power_dbm"].idxmax()
+    ].sort_values("step").reset_index(drop=True)
+
+    return all_links, strongest
+
+def calculate_satellites_along_route(
+    route,
+    satellite_entries,
+    timescale,
+    minimum_elevation_deg=10,
+):
+    """Find the highest visible satellite at sampled vehicle positions."""
+    results = []
+    start_time = timescale.now().utc_datetime()
+
+    # Use every third point: 20 positions from the 60-point example route.
+    for sample_number, position in enumerate(route.iloc[::3].itertuples(index=False)):
+        # Assume two minutes pass between sampled positions.
+        observation_time = timescale.from_datetime(
+            start_time + timedelta(minutes=2 * sample_number)
+        )
+        vehicle = wgs84.latlon(position.latitude, position.longitude)
+
+        best_satellite = None
+
+        for entry in satellite_entries:
+            try:
+                topocentric = (
+                    entry["satellite"] - vehicle
+                ).at(observation_time)
+
+                elevation, azimuth, distance = topocentric.altaz()
+
+                if elevation.degrees < minimum_elevation_deg:
+                    continue
+
+                if (
+                    best_satellite is None
+                    or elevation.degrees > best_satellite["elevation_deg"]
+                ):
+                    best_satellite = {
+                        "satellite_name": entry["name"],
+                        "elevation_deg": elevation.degrees,
+                        "distance_km": distance.km,
+                    }
+
+            except (TypeError, ValueError):
+                continue
+
+        results.append({
+            "step": position.step,
+            "minutes": 2 * sample_number,
+            "latitude": position.latitude,
+            "longitude": position.longitude,
+            "satellite_name": (
+                best_satellite["satellite_name"]
+                if best_satellite else None
+            ),
+            "elevation_deg": (
+                best_satellite["elevation_deg"]
+                if best_satellite else np.nan
+            ),
+            "distance_km": (
+                best_satellite["distance_km"]
+                if best_satellite else np.nan
+            ),
+        })
+
+    return pd.DataFrame(results)
 
 
 # -----------------------------------------------------------------------------
@@ -1384,6 +1494,165 @@ def main():
     st.plotly_chart(route_map, use_container_width=True)
     st.dataframe(gnb_df, hide_index=True, use_container_width=True)
 
+    # Calculate signal from all three gNBs along the vehicle route.
+    all_links_df, strongest_gnb_df = calculate_terrestrial_links(
+        route_df, gnb_df
+    )
+
+    signal_chart = px.line(
+        all_links_df,
+        x="step",
+        y="received_power_dbm",
+        color="site",
+        title="Estimated terrestrial signal along the route",
+        labels={
+            "step": "Route point",
+            "received_power_dbm": "Estimated received power (dBm)",
+        },
+    )
+
+    # Black dashed line shows the strongest available gNB.
+    signal_chart.add_trace(go.Scatter(
+        x=strongest_gnb_df["step"],
+        y=strongest_gnb_df["received_power_dbm"],
+        mode="lines",
+        line=dict(color="black", width=3, dash="dash"),
+        name="Strongest gNB",
+    ))
+
+    st.plotly_chart(signal_chart, use_container_width=True)
+
+    st.caption(
+        "Illustrative model: 3.5 GHz, 46 dBm EIRP and path-loss "
+        "exponent 3.0. This is estimated received power, not measured RSRP."
+    )
+
+    st.dataframe(
+        strongest_gnb_df.round({
+            "distance_km": 2,
+            "received_power_dbm": 1,
+        }),
+        hide_index=True,
+        use_container_width=True,
+    )
+
+    # find best satellite for the ue position
+    st.subheader("OneWeb visibility along the vehicle route")
+
+    if st.button("Calculate satellite visibility along route"):
+        with st.spinner("Checking OneWeb satellites along the route..."):
+            satellite_route_df = calculate_satellites_along_route(
+                route_df,
+                satellite_entries,
+                timescale,
+                minimum_elevation_deg=minimum_elevation,
+            )
+
+        st.dataframe(
+            satellite_route_df.round({
+                "elevation_deg": 1,
+                "distance_km": 1,
+            }),
+            hide_index=True,
+            use_container_width=True,
+        )
+
+        elevation_chart = px.line(
+            satellite_route_df,
+            x="minutes",
+            y="elevation_deg",
+            markers=True,
+            title="Highest visible OneWeb satellite along the route",
+            labels={
+                "minutes": "Minutes into journey",
+                "elevation_deg": "Elevation angle (degrees)",
+            },
+        )
+        st.plotly_chart(elevation_chart, use_container_width=True)
+
+        #----------------------------------------------------------
+        # Keep only terrestrial results for the sampled satellite route points.
+        journey_df = satellite_route_df.merge(
+            strongest_gnb_df[
+                ["step", "site", "received_power_dbm"]
+            ],
+            on="step",
+            how="left",
+        )
+
+        # An illustrative threshold chosen to make coverage gaps visible.
+        terrestrial_threshold_dbm = -80.0
+
+        def choose_serving_link(row):
+            if row["received_power_dbm"] >= terrestrial_threshold_dbm:
+                return f"Terrestrial: {row['site']}"
+
+            if pd.notna(row["satellite_name"]):
+                return f"Satellite: {row['satellite_name']}"
+
+            return "Outage"
+
+        journey_df["serving_link"] = journey_df.apply(
+            choose_serving_link,
+            axis=1,
+        )
+
+        journey_df["network_type"] = journey_df["serving_link"].apply(
+            lambda link: (
+                "Outage" if link == "Outage"
+                else "Satellite" if link.startswith("Satellite:")
+                else "Terrestrial"
+            )
+        )
+
+        # Count changes between two connected serving links.
+        previous_link = journey_df["serving_link"].shift()
+        handover = (
+            journey_df["serving_link"].ne(previous_link)
+            & previous_link.notna()
+            & journey_df["serving_link"].ne("Outage")
+            & previous_link.ne("Outage")
+        )
+        handover_count = int(handover.sum())
+
+        outage_points = int(
+            journey_df["network_type"].eq("Outage").sum()
+        )
+        satellite_points = int(
+            journey_df["network_type"].eq("Satellite").sum()
+        )
+
+        st.subheader("First terrestrial–satellite selection result")
+
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Satellite-served points", satellite_points)
+        col2.metric("Outage points", outage_points)
+        col3.metric("Connected-link changes", handover_count)
+
+        st.dataframe(
+            journey_df[
+                [
+                    "minutes",
+                    "site",
+                    "received_power_dbm",
+                    "satellite_name",
+                    "elevation_deg",
+                    "serving_link",
+                ]
+            ].round({
+                "received_power_dbm": 1,
+                "elevation_deg": 1,
+            }),
+            hide_index=True,
+            use_container_width=True,
+        )
+
+        st.caption(
+            "Experimental rule: use terrestrial when estimated power "
+            "is at least -80 dBm; otherwise use a satellite above the "
+            "selected minimum elevation. Satellite service here means "
+            "geometric visibility only, not a verified working link."
+        )
 
 if __name__ == "__main__":
     main()

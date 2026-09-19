@@ -141,13 +141,14 @@ def calculate_satellites_along_route(
     route,
     satellite_entries,
     timescale,
+    start_time,
     minimum_elevation_deg=10,
     hysteresis_deg=5,
 ):
     """Find the highest visible satellite at sampled vehicle positions."""
     """Compare highest-elevation and hysteresis satellite selection."""
     results = []
-    start_time = timescale.now().utc_datetime()
+    #start_time = timescale.now().utc_datetime()
     current_satellite_name = None
 
     # Use every third point: 20 positions from the 60-point example route.
@@ -1610,6 +1611,17 @@ def main():
     # find best satellite for the ue position
     st.subheader("OneWeb visibility along the vehicle route")
 
+    if "hybrid_experiment_start_time" not in st.session_state:
+        st.session_state.hybrid_experiment_start_time = (
+            timescale.now().utc_datetime()
+        )
+
+    st.caption(
+        "Experiment start: "
+        f"{st.session_state.hybrid_experiment_start_time:%Y-%m-%d %H:%M UTC}"
+    )
+
+
     hysteresis_deg = st.slider(
         "Satellite handover margin (degrees)",
         min_value=0,
@@ -1624,6 +1636,7 @@ def main():
                 route_df,
                 satellite_entries,
                 timescale,
+                start_time=st.session_state.hybrid_experiment_start_time,
                 minimum_elevation_deg=minimum_elevation,
                 hysteresis_deg=hysteresis_deg,
             )

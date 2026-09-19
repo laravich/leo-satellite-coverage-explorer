@@ -78,6 +78,20 @@ CITY_COORDINATES = {
     "Sydney, Australia": (-33.8688, 151.2093),
 }
 
+def example_hybrid_route():
+    """Illustrative straight-line route and example gNB sites near Nuremberg."""
+    route = pd.DataFrame({
+        "latitude": np.linspace(49.4521, 49.5897, 60),
+        "longitude": np.linspace(11.0767, 11.0040, 60),
+    })
+    route["step"] = np.arange(len(route))
+    sites = pd.DataFrame({
+        "site": ["Example gNB 1", "Example gNB 2", "Example gNB 3"],
+        "latitude": [49.4600, 49.5150, 49.5750],
+        "longitude": [11.0750, 11.0470, 11.0120],
+    })
+    return route, sites
+
 
 # -----------------------------------------------------------------------------
 # Data preparation
@@ -1330,6 +1344,45 @@ def main():
             use_container_width=True,
             hide_index=True,
         )
+
+    # -------------------------------------------------------------------------
+    # First hybrid-network step: show an illustrative route and gNB sites.
+    # -------------------------------------------------------------------------
+    st.header("🚗 Terrestrial–satellite experiment")
+    st.caption(
+        "Illustrative straight-line route and example gNB locations. "
+        "No radio coverage or satellite handovers are calculated yet."
+    )
+    route_df, gnb_df = example_hybrid_route()
+    route_map = go.Figure()
+    route_map.add_trace(go.Scattergeo(
+        lat=route_df["latitude"],
+        lon=route_df["longitude"],
+        mode="lines",
+        line=dict(width=4, color="#2563EB"),
+        name="Example route",
+    ))
+    route_map.add_trace(go.Scattergeo(
+        lat=gnb_df["latitude"],
+        lon=gnb_df["longitude"],
+        text=gnb_df["site"],
+        mode="markers+text",
+        textposition="top center",
+        marker=dict(size=12, color="#DC2626", symbol="circle"),
+        name="Example gNBs",
+    ))
+    route_map.update_geos(
+        visible=False,
+        resolution=50,
+        fitbounds="locations",
+        showland=True,
+        landcolor="#F1F5F9",
+        showlakes=True,
+        lakecolor="#BFDBFE",
+    )
+    route_map.update_layout(height=450, margin=dict(l=10, r=10, t=10, b=10))
+    st.plotly_chart(route_map, use_container_width=True)
+    st.dataframe(gnb_df, hide_index=True, use_container_width=True)
 
 
 if __name__ == "__main__":

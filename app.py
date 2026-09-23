@@ -24,11 +24,12 @@ st.set_page_config(
     layout="wide",
 )
 
-DATA_PATH = Path("data/oneweb_satellites.csv")
+from leo_explorer.config import DATA_PATH, DATA_URL, FALLBACK_DATA_URL
+#DATA_PATH = Path("data/oneweb_satellites.csv")
 
-DATA_URL = ("https://celestrak.org/NORAD/elements/gp.php?GROUP=ONEWEB&FORMAT=CSV")
+#DATA_URL = ("https://celestrak.org/NORAD/elements/gp.php?GROUP=ONEWEB&FORMAT=CSV")
 # download OneWeb orbital data from the GitHub mirror if timeouterror occurs
-FALLBACK_DATA_URL = ("https://raw.githubusercontent.com/satvisorcom/satvisor-data/master/celestrak/json/oneweb.json")
+#FALLBACK_DATA_URL = ("https://raw.githubusercontent.com/satvisorcom/satvisor-data/master/celestrak/json/oneweb.json")
 
 DATA_CACHE_SECONDS = 6 * 60 * 60 #6 hours cache the data downloaded
 POSITION_CACHE_SECONDS = 60

@@ -5,9 +5,15 @@ import pandas as pd
 import requests
 import streamlit as st
 from skyfield.api import EarthSatellite, load
+from skyfield.api import wgs84
 
 from .config import DATA_CACHE_SECONDS, FALLBACK_DATA_URL, NUMERIC_COLUMNS
-
+from .config import (
+    C_KM_PER_SECOND,
+    POSITION_CACHE_SECONDS,
+    POSITION_COLUMNS,
+    VISIBLE_COLUMNS,
+)
 # -----------------------------------------------------------------------------
 # Data preparation
 # -----------------------------------------------------------------------------
@@ -118,3 +124,76 @@ class SatelliteService:
                 )
 
         return (analysis_df, satellite_entries, timescale, load_errors, data_source)
+
+    @staticmethod
+    @st.cache_data(ttl=POSITION_CACHE_SECONDS)
+    def calculate_snapshot(
+        _satellite_entries, #only inside the function
+        _timescale,
+        ground_latitude: float,
+        ground_longitude: float,
+        minimum_elevation: int,
+    ):
+        """Calculate all world positions and local visibility in one loop.
+
+        Parameters beginning with ``_`` are intentionally excluded from Streamlit's
+        cache hashing. The result refreshes every 60 seconds or when an input changes.
+        """
+
+        current_time = _timescale.now()
+        ground_station = wgs84.latlon(ground_latitude, ground_longitude)
+        all_positions = []
+        visible_satellites = []
+        calculation_errors = []
+
+        for entry in _satellite_entries:
+            satellite = entry["satellite"]
+
+            try:
+                # Compute the orbital position once and reuse its subpoint.
+                geocentric = satellite.at(current_time)
+                subpoint = wgs84.subpoint(geocentric)
+
+                position = {
+                    "satellite_name": entry["name"],
+                    "norad_id": entry["norad_id"],
+                    "latitude": subpoint.latitude.degrees,
+                    "longitude": subpoint.longitude.degrees,
+                    "altitude_km": subpoint.elevation.km,
+                    "inclination": entry["inclination"],
+                    "mean_motion": entry["mean_motion"],
+                }
+                all_positions.append(position)
+
+                # Calculate elevation, azimuth and distance from the ground location.
+                topocentric = (satellite - ground_station).at(current_time)
+                elevation, azimuth, distance = topocentric.altaz()
+
+                if elevation.degrees >= minimum_elevation:
+                    visible_satellites.append(
+                        {
+                            "satellite_name": entry["name"],
+                            "norad_id": entry["norad_id"],
+                            "elevation_deg": elevation.degrees,
+                            "azimuth_deg": azimuth.degrees,
+                            "distance_km": distance.km,
+                            # One-way free-space delay; network delay is not included.
+                            "delay_ms": distance.km / C_KM_PER_SECOND * 1_000,
+                            "satellite_latitude": position["latitude"],
+                            "satellite_longitude": position["longitude"],
+                            "satellite_altitude_km": position["altitude_km"],
+                        }
+                    )
+            except (TypeError, ValueError) as error:
+                calculation_errors.append(f"{entry['name']}: {error}")
+
+        position_df = pd.DataFrame(all_positions, columns=POSITION_COLUMNS)
+        visible_df = pd.DataFrame(visible_satellites, columns=VISIBLE_COLUMNS)
+
+        if not visible_df.empty:
+            visible_df = visible_df.sort_values(
+                "elevation_deg", ascending=False
+            ).reset_index(drop=True)
+
+        calculation_time = current_time.utc_strftime("%Y-%m-%d %H:%M:%S UTC")
+        return position_df, visible_df, calculation_time, calculation_errors

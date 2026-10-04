@@ -503,7 +503,7 @@ class PlotFactory:
                 mode="markers",
                 name="Satellites",
                 marker={
-                    "size": 3.5,
+                    "size": 1.5,
                     "color": position_df["altitude_km"],
                     "colorscale": "Turbo",
                     "showscale": True,
@@ -538,10 +538,13 @@ class PlotFactory:
                 },
                 "camera": {
                     "eye": {
-                        "x": 1.5,
-                        "y": 1.5,
-                        "z": 1.0,
-                    }
+                        "x": 0.65,
+                        "y": 0.65,
+                        "z": 0.45,
+                    },
+                    "projection": {
+                        "type": "perspective",
+                    },
                 },
                 "bgcolor": "#050B18",
             },

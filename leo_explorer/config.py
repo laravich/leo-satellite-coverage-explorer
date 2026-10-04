@@ -1,5 +1,5 @@
 from pathlib import Path
-
+# website: https://celestrak.org/
 DATA_PATH = Path("../data/oneweb_satellites.csv")
 DATA_URL = "https://celestrak.org/NORAD/elements/gp.php?GROUP=ONEWEB&FORMAT=CSV"
 FALLBACK_DATA_URL = "https://raw.githubusercontent.com/satvisorcom/satvisor-data/master/celestrak/json/oneweb.json"
@@ -48,4 +48,27 @@ CITY_COORDINATES = {
     "Bangalore, India": (12.9716, 77.5946),
     "New York, USA": (40.7128, -74.0060),
     "Sydney, Australia": (-33.8688, 151.2093),
+}
+
+CONSTELLATIONS = {
+    "OneWeb": {
+        "group": "oneweb",
+        "local_path": DATA_PATH,
+    },
+    "Starlink": {
+        "group": "starlink",
+        "local_path": Path("../data/starlink_satellites.csv"),
+    },
+    "Iridium NEXT": {
+        "group": "iridium-NEXT",
+        "local_path": Path("../data/iridium_next_satellites.csv"),
+    },
+    "Kuiper": {
+        "group": "kuiper",
+        "local_path": Path("../data/kuiper_satellites.csv"),
+    },
+    "Globalstar": {
+        "group": "globalstar",
+        "local_path": Path("../data/globalstar_satellites.csv"),
+    },
 }

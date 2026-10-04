@@ -106,4 +106,4 @@ def main():
     # -------------------------------------------------------------------------
     # First hybrid-network step: show an illustrative route and gNB sites.
     # -------------------------------------------------------------------------
-    render_route(satellite_entries, timescale, minimum_elevation)
+    render_route(satellite_entries, timescale, minimum_elevation, constellation_name)

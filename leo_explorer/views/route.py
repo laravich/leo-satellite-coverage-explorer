@@ -6,7 +6,7 @@ import streamlit as st
 from ..hybrid import HybridRouteSimulator
 
 
-def render_route(satellite_entries, timescale, minimum_elevation):
+def render_route(satellite_entries, timescale, minimum_elevation, constellation_name):
     # -------------------------------------------------------------------------
     # First hybrid-network step: show an illustrative route and gNB sites.
     # -------------------------------------------------------------------------
@@ -89,7 +89,7 @@ def render_route(satellite_entries, timescale, minimum_elevation):
     )
 
     # find best satellite for the ue position
-    st.subheader("OneWeb visibility along the vehicle route")
+    st.subheader(f"{constellation_name} visibility along the vehicle route")
 
     if "hybrid_experiment_start_time" not in st.session_state:
         st.session_state.hybrid_experiment_start_time = (
@@ -111,7 +111,7 @@ def render_route(satellite_entries, timescale, minimum_elevation):
     )
 
     if st.button("Calculate satellite visibility along route"):
-        with st.spinner("Checking OneWeb satellites along the route..."):
+        with st.spinner(f"Checking {constellation_name} satellites along the route..."):
             satellite_route_df = HybridRouteSimulator.calculate_satellites_along_route(
                 route_df,
                 satellite_entries,
@@ -164,7 +164,7 @@ def render_route(satellite_entries, timescale, minimum_elevation):
             x="minutes",
             y="elevation_deg",
             markers=True,
-            title="Highest visible OneWeb satellite along the route",
+            title=f"Selected {constellation_name} satellite along the route",
             labels={
                 "minutes": "Minutes into journey",
                 "elevation_deg": "Elevation angle (degrees)",

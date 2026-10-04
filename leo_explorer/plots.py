@@ -1,7 +1,9 @@
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-
+import json
+from pathlib import Path
+from .config import CITY_COORDINATES
 
 class PlotFactory:
     @staticmethod
@@ -348,9 +350,133 @@ class PlotFactory:
                     [1.0, "#78C7E8"],
                 ],
                 showscale=False,
-                opacity=0.9,
+                opacity=1.0,
                 name="Earth",
                 hoverinfo="skip",
+            )
+        )
+
+                # ---------------------------------------------------------------------
+        # Draw country boundaries on the Earth surface
+        # ---------------------------------------------------------------------
+        countries_path = (
+            Path(__file__).resolve().parents[1]
+            / "assets"
+            / "countries.geojson"
+        )
+
+        with countries_path.open(encoding="utf-8") as file:
+            countries = json.load(file)
+
+        border_x = []
+        border_y = []
+        border_z = []
+        border_names = []
+
+        # Draw slightly above the surface to avoid overlapping the Earth mesh.
+        border_radius = earth_radius_km + 10.0
+
+        for feature in countries["features"]:
+            geometry = feature["geometry"]
+            country_name = feature["properties"].get(
+                "NAME_EN",
+                feature["properties"].get("NAME", "Country"),
+            )
+
+            if geometry["type"] == "Polygon":
+                polygons = [geometry["coordinates"]]
+            elif geometry["type"] == "MultiPolygon":
+                polygons = geometry["coordinates"]
+            else:
+                continue
+
+            for polygon in polygons:
+                for ring in polygon:
+                    coordinates = np.asarray(ring)
+
+                    # Unwrap longitude so crossings of ±180° stay continuous.
+                    lon = np.unwrap(np.radians(coordinates[:, 0]))
+                    lat = np.radians(coordinates[:, 1])
+
+                    # Add points so long straight segments follow the sphere.
+                    for index in range(len(ring) - 1):
+                        angular_span = max(
+                            abs(lon[index + 1] - lon[index]),
+                            abs(lat[index + 1] - lat[index]),
+                        )
+                        point_count = max(
+                            2,
+                            int(np.ceil(angular_span / np.radians(1))) + 1,
+                        )
+
+                        segment_lon = np.linspace(
+                            lon[index], lon[index + 1], point_count
+                        )
+                        segment_lat = np.linspace(
+                            lat[index], lat[index + 1], point_count
+                        )
+
+                        border_x.extend(
+                            border_radius
+                            * np.cos(segment_lat)
+                            * np.cos(segment_lon)
+                        )
+                        border_y.extend(
+                            border_radius
+                            * np.cos(segment_lat)
+                            * np.sin(segment_lon)
+                        )
+                        border_z.extend(
+                            border_radius * np.sin(segment_lat)
+                        )
+                        border_names.extend(
+                            [country_name] * point_count
+                        )
+
+                    # Separate rings so unrelated boundaries aren't joined.
+                    border_x.append(None)
+                    border_y.append(None)
+                    border_z.append(None)
+                    border_names.append("")
+
+        figure.add_trace(
+            go.Scatter3d(
+                x=border_x,
+                y=border_y,
+                z=border_z,
+                mode="lines",
+                name="Country outlines",
+                line=dict(color="#E2E8F0", width=2),
+                text=border_names,
+                hovertemplate="%{text}<extra></extra>",
+                connectgaps=False,
+            )
+        )
+
+        # ---------------------------------------------------------------------
+        # Add the predefined ground locations
+        # ---------------------------------------------------------------------
+        city_names = list(CITY_COORDINATES)
+        city_lat = np.radians([
+            CITY_COORDINATES[name][0] for name in city_names
+        ])
+        city_lon = np.radians([
+            CITY_COORDINATES[name][1] for name in city_names
+        ])
+        city_radius = earth_radius_km + 20.0
+
+        figure.add_trace(
+            go.Scatter3d(
+                x=city_radius * np.cos(city_lat) * np.cos(city_lon),
+                y=city_radius * np.cos(city_lat) * np.sin(city_lon),
+                z=city_radius * np.sin(city_lat),
+                mode="markers+text",
+                name="Ground locations",
+                marker=dict(size=4, color="#FBBF24"),
+                text=city_names,
+                textposition="top center",
+                textfont=dict(color="white", size=10),
+                hovertemplate="%{text}<extra></extra>",
             )
         )
 

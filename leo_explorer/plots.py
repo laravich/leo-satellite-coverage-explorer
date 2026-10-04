@@ -520,21 +520,30 @@ class PlotFactory:
             )
         )
 
+        # Keep the view centered on Earth and nearby satellite orbits.
+        view_limit = earth_radius_km + 2500.0
+
         # -------------------------------------------------------------------------
         # Format the 3D scene
         # -------------------------------------------------------------------------
         figure.update_layout(
             height=750,
             scene={
-                "aspectmode": "data",
+                "aspectmode": "cube",
                 "xaxis": {
                     "visible": False,
+                    "range": [-view_limit, view_limit],
+                    "autorange": False,
                 },
                 "yaxis": {
                     "visible": False,
+                    "range": [-view_limit, view_limit],
+                    "autorange": False,
                 },
                 "zaxis": {
                     "visible": False,
+                    "range": [-view_limit, view_limit],
+                    "autorange": False,
                 },
                 "camera": {
                     "eye": {

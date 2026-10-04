@@ -63,18 +63,8 @@ class SatelliteService:
 
             # Use the GitHub mirror if CelesTrak cannot be reached.
             # Try JSON orbital data for the same constellation.
-            except requests.RequestException as error:
-                # . CelesTrak allows one constellation download per data update, approximately every two hours. Another request can return 403
-                failed_response = error.response
-
-                if (
-                    failed_response is not None
-                    and failed_response.status_code in (403, 404)
-                ):
-                    raise ValueError(
-                        "CelesTrak refused the request: "
-                        f"{failed_response.text[:1000]}"
-                    ) from error
+            # Use an independent mirror if CelesTrak fails.
+            except requests.RequestException:
                 fallback_response = requests.get(
                     fallback_data_url,
                     timeout=(10, 60),
@@ -84,7 +74,7 @@ class SatelliteService:
                 raw_df = pd.DataFrame(fallback_response.json())
                 raw_df = raw_df.fillna("").astype(str)
 
-                data_source = "Orbital data through JSON fallback"
+                data_source = "Backup mirror — check orbital data age"
 
         # Create a numeric copy for metrics and visualizations.
         analysis_df = raw_df.copy()

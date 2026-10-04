@@ -55,7 +55,11 @@ def main():
                 ) = SatelliteService.load_satellite_data(
                     str(local_path),
                     f"{base_url}&FORMAT=CSV",
-                    f"{base_url}&FORMAT=JSON",
+                    (
+                        "https://raw.githubusercontent.com/"
+                        "satvisorcom/satvisor-data/master/"
+                        f"celestrak/json/{group}.json"
+                    ),
                 )
 
             except (requests.RequestException, ValueError) as error:
@@ -64,6 +68,20 @@ def main():
 
             # Copy before adding a column to the cached dataframe.
             frame = frame.copy()
+            epochs = pd.to_datetime(
+                frame["EPOCH"],
+                utc=True,
+                errors="coerce",
+            )
+            cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=7)
+            stale_count = int((epochs < cutoff).sum())
+
+            if stale_count:
+                st.warning(
+                    f"{name}: {stale_count} orbital records are over "
+                    "7 days old. Current-position and coverage estimates "
+                    "may be inaccurate."
+                )
             frame["constellation"] = name
 
             orbital_frames.append(frame)

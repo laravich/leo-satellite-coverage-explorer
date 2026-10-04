@@ -1,7 +1,7 @@
 import requests
 import streamlit as st
 
-from .config import DATA_PATH, DATA_URL
+from .config import CONSTELLATIONS
 from .satellites import SatelliteService
 from .settings import get_location_settings
 from .views.overview import render_overview
@@ -14,24 +14,59 @@ def main():
 
     st.title("🛰️ LEO Satellite Coverage Explorer")
     st.write(
-        "Explore the OneWeb constellation using CelesTrak orbital data. "
-        "The app shows current positions and instantaneous geometric visibility "
+        "Explore different LEO constellations using CelesTrak orbital data. "
+        "The app shows current positions and geometric visibility "
         "from a selected ground location."
     )
 
-    # Loading data
-    try:
-        (oneweb_df, satellite_entries, timescale, load_errors, data_source) = SatelliteService.load_satellite_data(str(DATA_PATH), DATA_URL)
+    constellation_name = st.sidebar.selectbox(
+        "Satellite constellation",
+        list(CONSTELLATIONS),
+    )
 
-    except requests.RequestException as error:
+    constellation = CONSTELLATIONS[constellation_name]
+    group = constellation["group"]
+    local_path = constellation["local_path"]
+
+    base_url = (
+        "https://celestrak.org/NORAD/elements/gp.php"
+        f"?GROUP={group}"
+    )
+    data_url = f"{base_url}&FORMAT=CSV"
+    fallback_url = f"{base_url}&FORMAT=JSON"
+
+    try:
+        (
+            orbital_df,
+            satellite_entries,
+            timescale,
+            load_errors,
+            data_source,
+        ) = SatelliteService.load_satellite_data(
+            str(local_path),
+            data_url,
+            fallback_url,
+        )
+
+    except (requests.RequestException, ValueError) as error:
         st.error(
-            "The local CSV was not found and the orbital data "
-            f"could not be downloaded from CelesTrak: {error}"
+            f"Could not load {constellation_name} orbital data: {error}"
         )
         st.stop()
 
-    # Show which source the app used
-    st.caption(f"Data source: {data_source}")
+    st.caption(
+        f"Constellation: {constellation_name} · Data source: {data_source}"
+    )
+
+    dataset_key = (
+        constellation_name,
+        tuple(
+            zip(
+                orbital_df["NORAD_CAT_ID"].astype(str),
+                orbital_df["EPOCH"].astype(str),
+            )
+        ),
+    )
 
     location_name, ground_latitude, ground_longitude, minimum_elevation = (
         get_location_settings()
@@ -49,13 +84,14 @@ def main():
             ground_latitude,
             ground_longitude,
             minimum_elevation,
+            dataset_key,
         )
     )
     # -------------------------------------------------------------------------
     # Dataset overview
     # -------------------------------------------------------------------------
 
-    render_overview(oneweb_df, satellite_entries, position_df, load_errors, calculation_errors)
+    render_overview(orbital_df, satellite_entries, position_df, load_errors, calculation_errors)
     # -------------------------------------------------------------------------
     # Global satellite positions
     # -------------------------------------------------------------------------

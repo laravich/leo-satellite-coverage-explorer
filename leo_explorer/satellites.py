@@ -7,7 +7,7 @@ import streamlit as st
 from skyfield.api import EarthSatellite, load
 from skyfield.api import wgs84
 
-from .config import DATA_CACHE_SECONDS, FALLBACK_DATA_URL, NUMERIC_COLUMNS
+from .config import DATA_CACHE_SECONDS, NUMERIC_COLUMNS
 from .config import (
     C_KM_PER_SECOND,
     POSITION_CACHE_SECONDS,
@@ -21,7 +21,7 @@ from .config import (
 class SatelliteService:
     @staticmethod
     @st.cache_resource(ttl=DATA_CACHE_SECONDS)
-    def load_satellite_data(csv_path: str, data_url: str):
+    def load_satellite_data(csv_path: str, data_url: str, fallback_data_url: str):
         """
         Load the local CSV when available.
 
@@ -62,22 +62,18 @@ class SatelliteService:
                 data_source = "Live CelesTrak data"
 
             # Use the GitHub mirror if CelesTrak cannot be reached.
+            # Try JSON orbital data for the same constellation.
             except requests.RequestException:
                 fallback_response = requests.get(
-                FALLBACK_DATA_URL,
-                timeout=(10, 60)
+                    fallback_data_url,
+                    timeout=(10, 60),
                 )
-
                 fallback_response.raise_for_status()
 
-                raw_df = pd.DataFrame(
-                    fallback_response.json()
-                )
-
-                # Replace missing values and preserve OMM fields as strings.
+                raw_df = pd.DataFrame(fallback_response.json())
                 raw_df = raw_df.fillna("").astype(str)
 
-                data_source = "CelesTrak data through backup mirror"
+                data_source = "Orbital data through JSON fallback"
 
         # Create a numeric copy for metrics and visualizations.
         analysis_df = raw_df.copy()
@@ -133,6 +129,7 @@ class SatelliteService:
         ground_latitude: float,
         ground_longitude: float,
         minimum_elevation: int,
+        dataset_key: tuple,
     ):
         """Calculate all world positions and local visibility in one loop.
 

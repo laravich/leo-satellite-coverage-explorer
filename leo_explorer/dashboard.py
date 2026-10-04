@@ -1,6 +1,6 @@
 import requests
 import streamlit as st
-
+import pandas as pd
 from .config import CONSTELLATIONS
 from .satellites import SatelliteService
 from .settings import get_location_settings
@@ -21,42 +21,81 @@ def main():
 
     constellation_name = st.sidebar.selectbox(
         "Satellite constellation",
-        list(CONSTELLATIONS),
+        [*CONSTELLATIONS, "All constellations"],
     )
 
-    constellation = CONSTELLATIONS[constellation_name]
-    group = constellation["group"]
-    local_path = constellation["local_path"]
+    if constellation_name == "All constellations":
+        selected_names = list(CONSTELLATIONS)
+    else:
+        selected_names = [constellation_name]
 
-    base_url = (
-        "https://celestrak.org/NORAD/elements/gp.php"
-        f"?GROUP={group}"
+    orbital_frames = []
+    satellite_entries = []
+    load_errors = []
+    data_sources = []
+
+    with st.spinner("Loading satellite orbital data..."):
+        for name in selected_names:
+            constellation = CONSTELLATIONS[name]
+            group = constellation["group"]
+            local_path = constellation["local_path"]
+
+            base_url = (
+                "https://celestrak.org/NORAD/elements/gp.php"
+                f"?GROUP={group}"
+            )
+
+            try:
+                (
+                    frame,
+                    entries,
+                    loaded_timescale,
+                    errors,
+                    source,
+                ) = SatelliteService.load_satellite_data(
+                    str(local_path),
+                    f"{base_url}&FORMAT=CSV",
+                    f"{base_url}&FORMAT=JSON",
+                )
+
+            except (requests.RequestException, ValueError) as error:
+                st.error(f"Could not load {name} orbital data: {error}")
+                st.stop()
+
+            # Copy before adding a column to the cached dataframe.
+            frame = frame.copy()
+            frame["constellation"] = name
+
+            orbital_frames.append(frame)
+            satellite_entries.extend(entries)
+            load_errors.extend(
+                f"{name}: {error}" for error in errors
+            )
+            data_sources.append(f"{name}: {source}")
+
+            # All datasets use the same time system.
+            timescale = loaded_timescale
+
+    orbital_df = pd.concat(
+        orbital_frames,
+        ignore_index=True,
     )
-    data_url = f"{base_url}&FORMAT=CSV"
-    fallback_url = f"{base_url}&FORMAT=JSON"
 
-    try:
-        (
-            orbital_df,
-            satellite_entries,
-            timescale,
-            load_errors,
-            data_source,
-        ) = SatelliteService.load_satellite_data(
-            str(local_path),
-            data_url,
-            fallback_url,
-        )
+    # Avoid counting a satellite twice if datasets overlap.
+    orbital_df = orbital_df.drop_duplicates(
+        subset="NORAD_CAT_ID",
+    ).reset_index(drop=True)
 
-    except (requests.RequestException, ValueError) as error:
-        st.error(
-            f"Could not load {constellation_name} orbital data: {error}"
-        )
-        st.stop()
+    satellite_entries = list({
+        str(entry["norad_id"]): entry
+        for entry in satellite_entries
+    }.values())
 
-    st.caption(
-        f"Constellation: {constellation_name} · Data source: {data_source}"
-    )
+    st.caption(f"Selection: {constellation_name}")
+
+    with st.expander("Data sources"):
+        for source in data_sources:
+            st.write(source)
 
     dataset_key = (
         constellation_name,

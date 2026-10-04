@@ -63,7 +63,18 @@ class SatelliteService:
 
             # Use the GitHub mirror if CelesTrak cannot be reached.
             # Try JSON orbital data for the same constellation.
-            except requests.RequestException:
+            except requests.RequestException as error:
+                # . CelesTrak allows one constellation download per data update, approximately every two hours. Another request can return 403
+                failed_response = error.response
+
+                if (
+                    failed_response is not None
+                    and failed_response.status_code in (403, 404)
+                ):
+                    raise ValueError(
+                        "CelesTrak refused the request: "
+                        f"{failed_response.text[:1000]}"
+                    ) from error
                 fallback_response = requests.get(
                     fallback_data_url,
                     timeout=(10, 60),
@@ -118,7 +129,14 @@ class SatelliteService:
                 load_errors.append(
                     f"{satellite_name}: {error}"
                 )
+        if not satellite_entries:
+            raise ValueError("No valid satellite records were loaded.")
 
+        # Preserve successful downloads across app restarts and code edits.
+        if not local_path.exists():
+            local_path.parent.mkdir(parents=True, exist_ok=True)
+            raw_df.to_csv(local_path, index=False)
+        
         return (analysis_df, satellite_entries, timescale, load_errors, data_source)
 
     @staticmethod
